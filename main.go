@@ -4,29 +4,99 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/itering/substrate-api-rpc/keyring"
+	"github.com/itering/substrate-api-rpc/rpc"
 	"io"
 	"log"
+	"math/big"
 	"net/http"
-	"strconv"
 	"time"
 )
 
-const Network = "acala"
+const Network = "paseo"
 const ApiKey = ""
 const TransfersCount = 5
 
-func main() {
-	client := &http.Client{}
-	apiUrl := fmt.Sprintf("https://%s.api.subscan.io/api/v2/scan/transfers", Network)
+const SourceWalletPubKey = ""
+const SourceWalletPhrase = ""
+const DestinationWalletPubKey = ""
 
-	symbolTokens := getSymbolTokenList(client)
+var lastTransferId = 0
+
+func main() {
+	httpClient := &http.Client{}
+
+	rpcClient := &rpc.Client{}
+	rpcClient.SetKeyRing(keyring.New(keyring.Ed25519Type, SourceWalletPhrase))
+
+	setLastTransferId(httpClient)
+
+	transfers := make(chan Transfer, TransfersCount)
+	go subscribeWalletTransfers(SourceWalletPubKey, httpClient, transfers)
+
+	for transfer := range transfers {
+		if transfer.Amount == nil {
+			log.Fatal("transfer.Amount is nil")
+		}
+
+		amount := new(big.Float)
+		amount.SetString(*transfer.Amount)
+
+		send(rpcClient, amount)
+	}
+}
+
+func send(cli *rpc.Client, amount *big.Float) {
+	signedTransaction, err := cli.SignTransaction(
+		"Balances",
+		"transfer",
+		map[string]interface{}{"Id": DestinationWalletPubKey},
+		amount,
+	)
+
+	if err != nil {
+		log.Fatalf("Failed to sign transaction with %s signature: %v", signedTransaction, err)
+	}
+
+	transactionHash, err := cli.SendAuthorSubmitExtrinsic(signedTransaction)
+	if err != nil {
+		log.Fatalf("Failed to send transaction with %s txHash: %v", transactionHash, err)
+	}
+}
+
+func subscribeWalletTransfers(address string, cli *http.Client, transfers chan Transfer) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+
+	defer ticker.Stop()
+
+	select {
+	case <-ticker.C:
+		ts := getWalletLastTransfers(address, cli)
+		for _, t := range ts {
+			transfers <- t
+		}
+	}
+}
+
+func setLastTransferId(cli *http.Client) {
+	transfers := getWalletLastTransfers(SourceWalletPubKey, cli)
+	if transfers[len(transfers)-1].TransferID == nil {
+		log.Fatalf("transfers[len(transfers)-1].TransferID is nil")
+	}
+
+	lastTransferId = *transfers[len(transfers)-1].TransferID
+}
+
+func getWalletLastTransfers(address string, cli *http.Client) []Transfer {
+	apiUrl := fmt.Sprintf("https://%s.api.subscan.io/api/v2/scan/transfers", Network)
 
 	ticker := time.Tick(200 * time.Millisecond)
 
 	request := TransfersListRequest{
-		Address: StringPtr("23M5ttkmR6Kco7bReRDve6bQUSAcwqebatp3fWGJYb4hDSDJ"),
+		Address: StringPtr(address),
 		Page:    IntPtr(0),
-		Row:     IntPtr(TransfersCount),
+		Row:     IntPtr(100),
+		AfterID: []*int{IntPtr(lastTransferId)},
 	}
 
 	transfers := make([]Transfer, 0, TransfersCount)
@@ -47,7 +117,7 @@ func main() {
 		req.Header.Add("x-api-key", ApiKey)
 		req.Header.Add("Content-Type", "application/json")
 
-		res, err := client.Do(req)
+		res, err := cli.Do(req)
 		if err != nil {
 			log.Fatalf("client.Do: %v", err)
 		}
@@ -75,56 +145,20 @@ func main() {
 
 		transfers = append(transfers, response.Data.Transfers...)
 
-		lastTransferID := response.Data.Transfers[len(response.Data.Transfers)-1].TransferID
+		if response.Data.Transfers[len(response.Data.Transfers)-1].TransferID == nil {
+			log.Fatal("response.Data.Transfers[len(response.Data.Transfers)-1].TransferID is nil")
+		}
+
+		lastTransferId = *response.Data.Transfers[len(response.Data.Transfers)-1].TransferID
 
 		if *request.Page < 99 {
 			*request.Page += 1
 		}
 
-		request.AfterID = []*int{lastTransferID}
-		fmt.Println(*lastTransferID)
+		request.AfterID = []*int{&lastTransferId}
 	}
 
-	for _, transfer := range transfers {
-		if transfer.From == nil || transfer.To == nil {
-			log.Fatal("transfer.From or transfer.To is empty")
-		}
-
-		if transfer.Amount == nil || transfer.AssetSymbol == nil {
-			log.Fatal("transfer.AssetSymbol is empty")
-		}
-
-		if symbolTokens.Data.Detail[*transfer.AssetSymbol] == nil {
-			log.Fatal("symbolTokens.Data.Detail[*transfer.AssetSymbol] is empty")
-		}
-
-		if symbolTokens.Data.Detail[*transfer.AssetSymbol].Price == nil {
-			log.Fatal("symbolTokens.Data.Detail[*transfer.AssetSymbol].Price is empty")
-		}
-
-		amount, err := strconv.ParseFloat(*transfer.Amount, 64)
-		if err != nil {
-			log.Fatalf("1. strconv.ParseFloat: %v", err)
-		}
-
-		symbUsdPrice, err := strconv.ParseFloat(*symbolTokens.Data.Detail[*transfer.AssetSymbol].Price, 64)
-		if err != nil {
-			log.Fatalf("2. strconv.ParseFloat: %v", err)
-		}
-
-		dotUsdPrice, err := strconv.ParseFloat(*symbolTokens.Data.Detail["DOT"].Price, 64)
-		if err != nil {
-			log.Fatalf("2. strconv.ParseFloat: %v", err)
-		}
-
-		symbUsd := amount * symbUsdPrice
-		dots := symbUsd / dotUsdPrice
-
-		fmt.Printf("\n%s ---> %s\n", *transfer.From, *transfer.To)
-		fmt.Printf("\t%s %s\n", *transfer.Amount, *transfer.AssetSymbol)
-		fmt.Printf("\t%f DOT\n", dots)
-		fmt.Printf("\t%f USD\n", symbUsd)
-	}
+	return transfers
 }
 
 func getSymbolTokenList(cli *http.Client) SymbolTokenListResponse {
