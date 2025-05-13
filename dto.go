@@ -36,6 +36,61 @@ type SymbolTokenListResponse struct {
 	Message     *string        `json:"message"`
 }
 
+type AccountResponse struct {
+	Code        *int                 `json:"code,omitempty"`
+	Message     *string              `json:"message,omitempty"`
+	GeneratedAt *int64               `json:"generated_at,omitempty"`
+	Data        *AccountResponseData `json:"data,omitempty"`
+}
+
+type AccountResponseData struct {
+	Account *Account `json:"account,omitempty"`
+}
+
+type Account struct {
+	Address            *string                 `json:"address,omitempty"`
+	Balance            *string                 `json:"balance,omitempty"`
+	Lock               *string                 `json:"lock,omitempty"`
+	BalanceLock        *string                 `json:"balance_lock,omitempty"`
+	IsEvmContract      *bool                   `json:"is_evm_contract,omitempty"`
+	AccountDisplay     *AccountDisplay1        `json:"account_display,omitempty"`
+	EvmAccount         *string                 `json:"evm_account,omitempty"`
+	CountExtrinsic     *int                    `json:"count_extrinsic,omitempty"`
+	NftAmount          *string                 `json:"nft_amount,omitempty"`
+	Display            *string                 `json:"display,omitempty"`
+	Web                *string                 `json:"web,omitempty"`
+	Riot               *string                 `json:"riot,omitempty"`
+	Email              *string                 `json:"email,omitempty"`
+	Legal              *string                 `json:"legal,omitempty"`
+	Twitter            *string                 `json:"twitter,omitempty"`
+	Github             *string                 `json:"github,omitempty"`
+	Matrix             *string                 `json:"matrix,omitempty"`
+	Discord            *string                 `json:"discord,omitempty"`
+	Reserved           *string                 `json:"reserved,omitempty"`
+	Bonded             *string                 `json:"bonded,omitempty"`
+	Unbonding          *string                 `json:"unbonding,omitempty"`
+	DemocracyLock      *string                 `json:"democracy_lock,omitempty"`
+	ConvictionLock     *string                 `json:"conviction_lock,omitempty"`
+	ElectionLock       *string                 `json:"election_lock,omitempty"`
+	Nonce              *int                    `json:"nonce,omitempty"`
+	Role               *string                 `json:"role,omitempty"`
+	Stash              *string                 `json:"stash,omitempty"`
+	IsCouncilMember    *bool                   `json:"is_council_member,omitempty"`
+	IsTechcommMember   *bool                   `json:"is_techcomm_member,omitempty"`
+	IsRegistrar        *bool                   `json:"is_registrar,omitempty"`
+	IsFellowshipMember *bool                   `json:"is_fellowship_member,omitempty"`
+	IsModuleAccount    *bool                   `json:"is_module_account,omitempty"`
+	IsERC20            *bool                   `json:"is_erc20,omitempty"`
+	IsERC721           *bool                   `json:"is_erc721,omitempty"`
+	Proxy              *map[string]interface{} `json:"proxy,omitempty"`
+	Multisig           *map[string]interface{} `json:"multisig,omitempty"`
+}
+
+type AccountDisplay1 struct {
+	Address *string                 `json:"address,omitempty"`
+	People  *map[string]interface{} `json:"people,omitempty"`
+}
+
 type TokenListData struct {
 	Detail map[string]*TokenDetail `json:"detail"`
 	Token  []*string               `json:"token"`

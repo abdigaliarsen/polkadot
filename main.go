@@ -6,29 +6,32 @@ import (
 	"fmt"
 	"github.com/centrifuge/go-substrate-rpc-client/types"
 	"github.com/itering/substrate-api-rpc/keyring"
+	"github.com/itering/substrate-api-rpc/metadata"
 	"github.com/itering/substrate-api-rpc/rpc"
+	"github.com/itering/substrate-api-rpc/websocket"
 	"github.com/vedhavyas/go-subkey"
 	"github.com/vedhavyas/go-subkey/sr25519"
 	"io"
 	"log"
-	"math/big"
 	"net/http"
 	"time"
 )
 
 const Network = "paseo"
 const ApiKey = ""
-const TransfersCount = 5
 
 const SourceWalletMnemonic = ""
 
-const DestinationWalletAddress = ""
-const DestinationWalletPubKey = ""
+const DestinationWalletAddress = "1569vLJdqPR4eHCcWtp1Z72GbK23XCsiPLWNzzppYknF4X3r"
+const DestinationWalletPubKey = "0xb4df2fc883f41c27cdbb67443aad34d5c1eb3ef6e97037121ae3fb95a10e5679"
 
-var lastTransferId = 639977000046
+var transferIds = map[int]struct{}{}
 
 func main() {
 	httpClient := &http.Client{}
+	rpcClient := &rpc.Client{}
+
+	websocket.SetEndpoint("ws://127.0.0.1:9944")
 
 	scheme := sr25519.Scheme{}
 	kr, err := subkey.DeriveKeyPair(scheme, SourceWalletMnemonic)
@@ -39,41 +42,39 @@ func main() {
 	sourceWalletSeed := types.HexEncodeToString(kr.Seed())
 	sourceWalletAddress := kr.SS58Address(0)
 
-	rpcClient := &rpc.Client{}
+	getWalletLastTransfers(sourceWalletAddress, httpClient)
 	rpcClient.SetKeyRing(keyring.New(keyring.Sr25519Type, sourceWalletSeed))
 
-	setLastTransferId(httpClient, sourceWalletAddress)
-	log.Printf("last transfer id: %d\n", lastTransferId)
-
-	transfers := make(chan Transfer, TransfersCount)
-	go subscribeWalletTransfers(sourceWalletAddress, httpClient, transfers)
-
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case transfer := <-transfers:
-			if transfer.Amount == nil {
-				log.Fatal("transfer.Amount is nil")
-			}
-
-			amount := new(big.Float)
-			amount.SetString(*transfer.Amount)
-			log.Printf("transfer.Amount %s", amount.String())
-			send(rpcClient, amount)
-
-		case <-ticker.C:
-			log.Println("nothing happens")
-		}
+	raw, err := rpc.GetMetadataByHash(nil)
+	if err != nil {
+		log.Fatalf("GetMetadataByHash: %v", err)
 	}
+
+	rpcClient.SetMetadata(metadata.RegNewMetadataType(92, raw))
+
+	send(rpcClient, "1")
+
+	//transfers := make(chan Transfer, 10)
+	//go subscribeWalletTransfers(sourceWalletAddress, httpClient, transfers)
+	//
+	//ticker := time.NewTicker(5 * time.Second)
+	//defer ticker.Stop()
+	//
+	//for transfer := range transfers {
+	//	if transfer.Amount == nil {
+	//		log.Fatal("transfer.Amount is nil")
+	//	}
+	//
+	//	log.Printf("transfer.Amount %s %s", *transfer.Amount, *transfer.AssetUniqueID)
+	//	send(rpcClient, *transfer.Amount)
+	//}
 }
 
-func send(cli *rpc.Client, amount *big.Float) {
+func send(cli *rpc.Client, amount string) {
 	signedTransaction, err := cli.SignTransaction(
-		"Balances",
+		"balances",
 		"transfer",
-		map[string]interface{}{"Id": DestinationWalletPubKey},
+		map[string]interface{}{"Id": DestinationWalletAddress},
 		amount,
 	)
 
@@ -81,36 +82,19 @@ func send(cli *rpc.Client, amount *big.Float) {
 		log.Fatalf("Failed to sign transaction with %s signature: %v", signedTransaction, err)
 	}
 
-	transactionHash, err := cli.SendAuthorSubmitExtrinsic(signedTransaction)
+	transactionHash, err := cli.SendAuthorSubmitAndWatchExtrinsic(signedTransaction)
 	if err != nil {
 		log.Fatalf("Failed to send transaction with %s txHash: %v", transactionHash, err)
 	}
 }
 
 func subscribeWalletTransfers(address string, cli *http.Client, transfers chan Transfer) {
-	ticker := time.NewTicker(200 * time.Millisecond)
-
-	defer ticker.Stop()
-
-	for range ticker.C {
+	for {
 		ts := getWalletLastTransfers(address, cli)
 		for _, t := range ts {
 			transfers <- t
 		}
 	}
-}
-
-func setLastTransferId(cli *http.Client, address string) {
-	transfers := getWalletLastTransfers(address, cli)
-	if len(transfers) == 0 {
-		log.Fatal("setLastTransferId.len(transfers) == 0")
-	}
-
-	if transfers[len(transfers)-1].TransferID == nil {
-		log.Fatalf("transfers[len(transfers)-1].TransferID is nil")
-	}
-
-	lastTransferId = *transfers[len(transfers)-1].TransferID
 }
 
 func getWalletLastTransfers(address string, cli *http.Client) []Transfer {
@@ -122,12 +106,12 @@ func getWalletLastTransfers(address string, cli *http.Client) []Transfer {
 		Address: StringPtr(address),
 		Page:    IntPtr(0),
 		Row:     IntPtr(100),
-		AfterID: []*int{IntPtr(lastTransferId)},
+		Order:   StringPtr("asc"),
 	}
 
-	transfers := make([]Transfer, 0, TransfersCount)
+	transfers := make([]Transfer, 0, 100)
 
-	for len(transfers) < TransfersCount {
+	for {
 		<-ticker
 
 		payload, err := json.Marshal(request)
@@ -169,23 +153,39 @@ func getWalletLastTransfers(address string, cli *http.Client) []Transfer {
 			break
 		}
 
-		transfers = append(transfers, response.Data.Transfers...)
-
-		if response.Data.Transfers[len(response.Data.Transfers)-1].TransferID == nil {
-			log.Fatal("response.Data.Transfers[len(response.Data.Transfers)-1].TransferID is nil")
-		}
-
 		if len(response.Data.Transfers) == 0 {
 			log.Fatal("getWalletLastTransfers.len(response.Data.Transfers) == 0")
 		}
-
-		lastTransferId = *response.Data.Transfers[len(response.Data.Transfers)-1].TransferID
 
 		if *request.Page < 99 {
 			*request.Page += 1
 		}
 
-		request.AfterID = []*int{&lastTransferId}
+		for _, transfer := range response.Data.Transfers {
+			if transfer.To == nil {
+				log.Fatal("transfer.To is nil")
+			}
+
+			if transfer.Amount == nil {
+				log.Fatal("transfer.Amount is nil")
+			}
+
+			if transfer.AssetSymbol == nil {
+				log.Fatal("transfer.AssetSymbol is nil")
+			}
+
+			if _, ok := transferIds[*transfer.TransferID]; ok {
+				continue
+			}
+
+			//log.Printf("transfer.Amount %s %s", *transfer.Amount, *transfer.AssetUniqueID)
+			transferIds[*transfer.TransferID] = struct{}{}
+
+			if *transfer.To == address {
+				//log.Printf("received %s %s", *transfer.Amount, *transfer.AssetSymbol)
+				transfers = append(transfers, transfer)
+			}
+		}
 	}
 
 	return transfers
