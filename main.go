@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/centrifuge/go-substrate-rpc-client/types"
 	"github.com/itering/substrate-api-rpc/keyring"
 	"github.com/itering/substrate-api-rpc/rpc"
+	"github.com/vedhavyas/go-subkey"
+	"github.com/vedhavyas/go-subkey/sr25519"
 	"io"
 	"log"
 	"math/big"
@@ -17,32 +20,52 @@ const Network = "paseo"
 const ApiKey = ""
 const TransfersCount = 5
 
-const SourceWalletPubKey = ""
-const SourceWalletPhrase = ""
+const SourceWalletMnemonic = ""
+
+const DestinationWalletAddress = ""
 const DestinationWalletPubKey = ""
 
-var lastTransferId = 0
+var lastTransferId = 639977000046
 
 func main() {
 	httpClient := &http.Client{}
 
-	rpcClient := &rpc.Client{}
-	rpcClient.SetKeyRing(keyring.New(keyring.Ed25519Type, SourceWalletPhrase))
+	scheme := sr25519.Scheme{}
+	kr, err := subkey.DeriveKeyPair(scheme, SourceWalletMnemonic)
+	if err != nil {
+		log.Fatalf("subkey.DeriveKeyPair(scheme, SourceWalletMnemonic): %v", err)
+	}
 
-	setLastTransferId(httpClient)
+	sourceWalletSeed := types.HexEncodeToString(kr.Seed())
+	sourceWalletAddress := kr.SS58Address(0)
+
+	rpcClient := &rpc.Client{}
+	rpcClient.SetKeyRing(keyring.New(keyring.Sr25519Type, sourceWalletSeed))
+
+	setLastTransferId(httpClient, sourceWalletAddress)
+	log.Printf("last transfer id: %d\n", lastTransferId)
 
 	transfers := make(chan Transfer, TransfersCount)
-	go subscribeWalletTransfers(SourceWalletPubKey, httpClient, transfers)
+	go subscribeWalletTransfers(sourceWalletAddress, httpClient, transfers)
 
-	for transfer := range transfers {
-		if transfer.Amount == nil {
-			log.Fatal("transfer.Amount is nil")
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case transfer := <-transfers:
+			if transfer.Amount == nil {
+				log.Fatal("transfer.Amount is nil")
+			}
+
+			amount := new(big.Float)
+			amount.SetString(*transfer.Amount)
+			log.Printf("transfer.Amount %s", amount.String())
+			send(rpcClient, amount)
+
+		case <-ticker.C:
+			log.Println("nothing happens")
 		}
-
-		amount := new(big.Float)
-		amount.SetString(*transfer.Amount)
-
-		send(rpcClient, amount)
 	}
 }
 
@@ -69,8 +92,7 @@ func subscribeWalletTransfers(address string, cli *http.Client, transfers chan T
 
 	defer ticker.Stop()
 
-	select {
-	case <-ticker.C:
+	for range ticker.C {
 		ts := getWalletLastTransfers(address, cli)
 		for _, t := range ts {
 			transfers <- t
@@ -78,8 +100,12 @@ func subscribeWalletTransfers(address string, cli *http.Client, transfers chan T
 	}
 }
 
-func setLastTransferId(cli *http.Client) {
-	transfers := getWalletLastTransfers(SourceWalletPubKey, cli)
+func setLastTransferId(cli *http.Client, address string) {
+	transfers := getWalletLastTransfers(address, cli)
+	if len(transfers) == 0 {
+		log.Fatal("setLastTransferId.len(transfers) == 0")
+	}
+
 	if transfers[len(transfers)-1].TransferID == nil {
 		log.Fatalf("transfers[len(transfers)-1].TransferID is nil")
 	}
@@ -147,6 +173,10 @@ func getWalletLastTransfers(address string, cli *http.Client) []Transfer {
 
 		if response.Data.Transfers[len(response.Data.Transfers)-1].TransferID == nil {
 			log.Fatal("response.Data.Transfers[len(response.Data.Transfers)-1].TransferID is nil")
+		}
+
+		if len(response.Data.Transfers) == 0 {
+			log.Fatal("getWalletLastTransfers.len(response.Data.Transfers) == 0")
 		}
 
 		lastTransferId = *response.Data.Transfers[len(response.Data.Transfers)-1].TransferID
