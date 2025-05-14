@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/centrifuge/go-substrate-rpc-client/types"
 	"github.com/itering/substrate-api-rpc/keyring"
 	"github.com/itering/substrate-api-rpc/metadata"
 	"github.com/itering/substrate-api-rpc/rpc"
+	"github.com/itering/substrate-api-rpc/util"
 	"github.com/itering/substrate-api-rpc/websocket"
-	"github.com/vedhavyas/go-subkey"
-	"github.com/vedhavyas/go-subkey/sr25519"
+	"github.com/vedhavyas/go-subkey/v2"
+	"github.com/vedhavyas/go-subkey/v2/sr25519"
 	"io"
 	"log"
 	"net/http"
@@ -18,9 +18,9 @@ import (
 )
 
 const Network = "paseo"
-const ApiKey = ""
+const ApiKey = "53410e4295d841df8e59090d9c6ac99b"
 
-const SourceWalletMnemonic = ""
+const SourceWalletMnemonic = "same hen amused roof fall leader rib exit dance parent tragic solution"
 
 const DestinationWalletAddress = "1569vLJdqPR4eHCcWtp1Z72GbK23XCsiPLWNzzppYknF4X3r"
 const DestinationWalletPubKey = "0xb4df2fc883f41c27cdbb67443aad34d5c1eb3ef6e97037121ae3fb95a10e5679"
@@ -39,38 +39,40 @@ func main() {
 		log.Fatalf("subkey.DeriveKeyPair(scheme, SourceWalletMnemonic): %v", err)
 	}
 
-	sourceWalletSeed := types.HexEncodeToString(kr.Seed())
+	sourceWalletSeed := util.BytesToHex(kr.Seed())
 	sourceWalletAddress := kr.SS58Address(0)
 
 	getWalletLastTransfers(sourceWalletAddress, httpClient)
-	rpcClient.SetKeyRing(keyring.New(keyring.Sr25519Type, sourceWalletSeed))
+	krr := keyring.New(keyring.Sr25519Type, sourceWalletSeed)
+	rpcClient.SetKeyRing(krr)
 
 	raw, err := rpc.GetMetadataByHash(nil)
 	if err != nil {
-		log.Fatalf("GetMetadataByHash: %v", err)
+		log.Fatalf("rpc.GetMetadataByHash: %v", err)
 	}
 
-	rpcClient.SetMetadata(metadata.RegNewMetadataType(92, raw))
+	md := metadata.RegNewMetadataType(92, raw)
+	rpcClient.SetMetadata(md)
 
-	send(rpcClient, "1")
+	transfers := make(chan Transfer, 10)
+	go subscribeWalletTransfers(sourceWalletAddress, httpClient, transfers)
 
-	//transfers := make(chan Transfer, 10)
-	//go subscribeWalletTransfers(sourceWalletAddress, httpClient, transfers)
-	//
-	//ticker := time.NewTicker(5 * time.Second)
-	//defer ticker.Stop()
-	//
-	//for transfer := range transfers {
-	//	if transfer.Amount == nil {
-	//		log.Fatal("transfer.Amount is nil")
-	//	}
-	//
-	//	log.Printf("transfer.Amount %s %s", *transfer.Amount, *transfer.AssetUniqueID)
-	//	send(rpcClient, *transfer.Amount)
-	//}
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for transfer := range transfers {
+		if transfer.Amount == nil {
+			log.Fatal("transfer.Amount is nil")
+		}
+
+		log.Printf("transfer.Amount %s %s", *transfer.Amount, *transfer.AssetUniqueID)
+		send(rpcClient, *transfer.Amount)
+	}
 }
 
 func send(cli *rpc.Client, amount string) {
+	log.Println("sending...")
+
 	signedTransaction, err := cli.SignTransaction(
 		"balances",
 		"transfer",
@@ -79,13 +81,17 @@ func send(cli *rpc.Client, amount string) {
 	)
 
 	if err != nil {
-		log.Fatalf("Failed to sign transaction with %s signature: %v", signedTransaction, err)
+		log.Fatalf("Failed to sign transaction: %v", err)
 	}
 
-	transactionHash, err := cli.SendAuthorSubmitAndWatchExtrinsic(signedTransaction)
+	log.Printf("signed tx: %s\n", signedTransaction)
+
+	transactionHash, err := cli.SendAuthorSubmitExtrinsic(signedTransaction)
 	if err != nil {
-		log.Fatalf("Failed to send transaction with %s txHash: %v", transactionHash, err)
+		log.Fatalf("Failed to send transaction: %v", err)
 	}
+
+	log.Printf("Sent transaction successfully: %s", transactionHash)
 }
 
 func subscribeWalletTransfers(address string, cli *http.Client, transfers chan Transfer) {
