@@ -57,9 +57,6 @@ func main() {
 	transfers := make(chan Transfer, 10)
 	go subscribeWalletTransfers(sourceWalletAddress, httpClient, transfers)
 
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
 	for transfer := range transfers {
 		if transfer.Amount == nil {
 			log.Fatal("transfer.Amount is nil")
